@@ -1,0 +1,279 @@
+---
+title: "NBA Salary Predictor"
+author: "Brandon Rufino"
+date: "06/12/2019"
+output: 
+  pdf_document: default
+  html_document: default
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# SECTION 1: Overview
+
+Hello all! As a student in Toronto and a long time NBA fan, basketball in the North has never been sweeter. That being said, I got some serious concerns. That is, teams continually tie themselves to players via large contracts when the performance of a player may not indicate they deserve said salary. Thus, taking inspiration from Koki Ando on Kaggle I will create a NBA Salary Predictor using simple regression models.
+
+To be specific the goal is to look at the season performance in 2016-2017 to predict the salary they should make in a season.
+
+## 1.1 Problem statement
+
+As stated in the overview our goal is to look at the season performance 2016-2017 to predict the salary they should make in a season. We will perform the following steps in this project: (1) load and clean our data, (2) data preprocessing, (3) data exploration, and (4) creating a few regression models. 
+
+## 1.2 SETUP: Load required packages
+
+Before we begin our data crunch let us load all required packages and the data-set.
+
+```{r eval=TRUE,echo=FALSE,include=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos ="http://cran.us.r-project.org")
+if(!require(corrplot)) install.packages("corrplot", repos = "http://cran.us.r-project.org")
+if(!require(GGally)) install.packages("GGally", repos = "http://cran.us.r-project.org")
+if(!require(PerformanceAnalytics)) install.packages("PerformanceAnalytics", repos = "http://cran.us.r-project.org")
+if(!require(plotly)) install.packages("plotly", repos = "http://cran.us.r-project.org")
+```
+
+## 1.3 SETUP: Prepare data
+
+Here we prepare 2 datasets. The first dataset salary_table which was scraped from Koki Ando https://github.com/koki25ando/NBA-Players-2017-18-dataset. This dataset contains salaries of the 2017-2018 season. The second dataset, stats, is the NBA players season stats since the 1950 season.
+```{r eval=TRUE,echo=FALSE}
+salary_table <- 
+  read.csv("input/salary/NBA_season1718_salary.csv")
+stats <- read.csv("input/nba-players-stats/Seasons_Stats.csv")
+```
+
+
+salary_table looks like this:
+```{r eval=TRUE, echo=TRUE}
+head(salary_table)
+```
+
+stats looks like this:
+```{r eval=TRUE, echo=TRUE}
+head(stats)
+```
+
+# SECTION 2: Methods
+
+In this section we will we will preprocess our data to extrapolate features that we may use in our model training. We will then explore our dataset. Lastly, we will describe the different models we will train and test.
+
+## 2.1: Data preprocessing
+
+Because the stats variable contains stats since the 1950 season let us filter to keep only the 2016-2017 season. Remember our goal is to look at the season performance (2016-2017) to predict the salary they should make in the 2017-2018 season. Some features we would like to include in our regression model is averages since we would like to gauge players who put up great numbers but are injured for majority of the season.
+```{r eval=TRUE,echo=TRUE}
+# must mutate some columns to get MPG, PPG, APG, RPG, TOPG, BPG, SPG
+stats_1617 <- 
+  stats %>% filter(Year >= 2017) %>% 
+  select(Year:G, MP, PER, FG:PTS) %>% 
+  distinct(Player, .keep_all = TRUE) %>% 
+  mutate(MPG = MP/G, PPG = PTS/G, APG = AST/G, 
+         RPG = TRB/G, TOPG = TOV/G, BPG = BLK/G, 
+        SPG = STL/G) 
+```
+
+Lets take a look at our data:
+```{r eval=TRUE, echo=TRUE}
+head(stats_1617)
+```
+
+Great now we have our stats of the previous season (2016-2017) and our salary of the 2017-2018 season. Let us merge these datasets in order to make integration into our models easy:
+```{r eval=TRUE, echo=TRUE}
+#merge by player and name column
+stats1617_salary1718 <- merge(stats_1617, salary_table, by.x = "Player", by.y = "Player")
+names(stats1617_salary1718)[40] <- "salary_1718"
+#remove tm.y column
+stats1617_salary1718 <- stats1617_salary1718[-39]
+```
+Lets take a look:
+```{r eval=TRUE,echo=TRUE}
+head(stats1617_salary1718)
+```
+
+
+## 2.2: Data exploration
+
+Lets take a look at the correlation between salary and the players per game stats:
+```{r eval=TRUE,echo=TRUE}
+#create correlation plot of players salary with their MPG, PPG, APG, RPG, TOPG, BPG, SPG, Age, and PER
+corrplot(cor(stats1617_salary1718 %>% 
+               select(salary_1718, MPG:SPG, 
+                      Age, PER, contains("%")), 
+             use = "complete.obs"), 
+         method = "circle",type = "upper")
+```
+Lets look at another correlation technique to better visualize this data:
+```{r eval=TRUE, echo=TRUE}
+stats_salary_cor <- 
+  stats1617_salary1718 %>% 
+  select(salary_1718, PPG, MPG, TOPG, RPG, PER, SPG, APG)
+ggpairs(stats_salary_cor)
+```
+
+Lets focus on the top row: 
+```{r}
+cor(stats_salary_cor)[,"salary_1718"]
+```
+Note there is a strong correlation between minutes per game and salary. This makes sense because players playing the most time on the court usually are deserving of more pay. However, a surprising correlation is the turnovers per game with salary. No wonder Westbrook is getting paid (joking obviously).
+
+
+Let us look at some plots. The first one we will look at is the salary against points per game:
+```{r}
+#name the team column Team
+names(stats1617_salary1718)[5] <- "Team"
+# #plot salary vs ppg with team as different groups
+stats1617_salary1718 %>% 
+  ggplot(aes(x = salary_1718, y = PPG, color=Team, label=Player)) + 
+  geom_point() +geom_text(check_overlap = TRUE)
+```
+Looking back at this data it is crazy to see Isaiah Thomas put up incredible points given his low salary. If it was not for an injury in the post season and a Kyrie Irving trade I wonder how much money he would have made.
+
+## 2.3: Model exploration: regression
+
+### Model 1: PPG
+
+First of all, we would like to visualize if PPG represents a strong enough correlation to salary. Let us use a simple regression function:
+```{r eval=TRUE,echo=TRUE}
+#plot regression line
+stats1617_salary1718 %>% 
+  ggplot(aes(x = salary_1718, y = PPG)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") 
+```
+The line does not look like a great fit. Let us dive deeper into our analysis.
+
+### Model 2: using per game values for regression
+
+We will use MPG, PPG, APG, RPG, TOPG, BPG, SPG for our regression analysis with the help of the 'lm' function:
+```{r eval=TRUE,echo=TRUE}
+#create regression variable
+stats_salary_regression <- 
+  stats1617_salary1718 %>% select(salary_1718, MPG:SPG)
+#run regression on dataset
+lm(salary_1718~., data=stats_salary_regression)
+```
+Wow! It seems from this model analysis that as APG increases by a unit they will be predicted to make an additional 1,059,087 USD per year. Interesting that TOPG takes a huge hit of -2,709,447 USD per year.
+
+### Model 3 Experiment: turnover and playing time salary analysis
+
+Let us revisit the turnover subject. Recall we saw a high turnover rate lead to a positive correlation with salary. Let us see if players average higher salaries if they have a high turnover rates:
+```{r eval=TRUE,echo=TRUE}
+
+#find the average MPG and TOPG
+avg.minutes <- mean(stats_salary_regression$MPG)
+avg.turnover <- mean(stats_salary_regression$TOPG)
+
+#create a trusted column if players get above average minutes
+stats1617_salary1718$trusted <- as.factor(ifelse(stats1617_salary1718$MPG >= avg.minutes, "Yes", "No"))
+
+#create a aggressiveness column if players turn over the ball more then the average
+stats1617_salary1718$agressiveness <- as.factor(ifelse(stats1617_salary1718$TOPG >= avg.turnover, "Yes", "No"))
+
+#lets look at our new dataset
+head(stats1617_salary1718)
+```
+Let us plot two separate regression lines: (1) for players who aren't considered agressive (they do not turn over the ball frequently) and (2) for players who are agressive (they have a high turnover rate):
+```{r eval=TRUE,echo=TRUE}
+stats1617_salary1718 %>% 
+  ggplot(aes(x = salary_1718, y = TOPG, colour = agressiveness)) + 
+  geom_point() + 
+  geom_smooth(method="lm")
+```
+Looks like players who play agressive (noted by a high turnover rate) tend to have higher salaries.
+
+Lastly, let us make a regression line looking at if the coach trusts a player (noted by above league average playing time), and if the player is agressive (noted by an above league average turnover rate):
+```{r eval=TRUE,echo=TRUE}
+lm(formula = salary_1718 ~ trusted * agressiveness, data=stats1617_salary1718)
+```
+Interesting. As we can see if a player is trusted (have a high playing time) they are predicted to make more salary than a player who plays agressively (and turns over the ball often). We will shortly see that a modle with two yes/no type parameters is a poor and limited way to predict salary. It is better to have continuous variables in this case then discrete yes or no features.
+
+# SECTION 3: Results
+
+The 3 models discussed above will be ran against NBA player and fan favorite; Pascal Siakam. Pascal was just extended a max contract (29 million for the 2020-2021 season) with the Raptors based on his play in the 2018-2019 season (and his age). With Leonard gone the Raptors believe Pascal can be the franchise player. Let us see if he is living up to his contract extension in this 2019-2020 season. Thus far he is averaging: 36.9 MPG, 8.6 RPG, 3.8 APG, 0.9 SPG, 0.7 BPG, 2.9 TOPG and 25.0 PPG.
+
+We will define a salary_prediction function for each model which takes in the required parameters.
+
+Please note, the models are created based on the stats in the 2016-2017 season. Given more time it would have been useful to extrapolate the latest season stats. Also, factors such as age and player efficency should have been added to our model.
+
+## 3.1 Model 1: 
+Recall, this model only considers points per game
+```{r}
+#considers points per game in function
+salary_prediction_model1 <- function(m, points){
+  pre_new <- predict(m, data.frame(PPG = points))
+  msg <- paste("PPG:", points, " ==> Expected Salary: $", format(round(pre_new), big.mark = ","), sep = "")
+  print(msg)
+}
+#create model
+model1<- lm(salary_1718~PPG, data=stats1617_salary1718)
+#predict salary
+predict1<-salary_prediction_model1(model1, 25.0)
+```
+Interesting, given Pascal's PPG alone he is predicted to command a salary of approximately 21 million.
+
+## 3.2 Model 2: 
+This model considers MPG, PPG, APG, RPG, TOPG, BPG, SPG
+```{r}
+#considers points per game in function
+salary_prediction_model2 <- function(m, minutes, points, assists, rebounds, turnovers, blocks, steals){
+  pre_new <- predict(m, data.frame(PPG = points, MPG=minutes, APG=assists,
+                                   RPG=rebounds, TOPG=turnovers, BPG=blocks,
+                                   SPG=steals))
+  msg <- paste("PPG:", points, "RPG:", rebounds, "MPG:", minutes, "APG:", assists, "TOPG:", turnovers, "BPG:", blocks, "SPG:", steals, " ==> Expected Salary: $", format(round(pre_new), big.mark = ","), sep = "")
+  print(msg)
+}
+#create model
+model2<- lm(salary_1718~., data=stats_salary_regression)
+#predict salary
+predict2<-salary_prediction_model2(model2, 36.9, 25.0, 3.8, 8.6, 2.9, 0.7, 0.9)
+```
+Interesting Pascals estimated salary droped by the smallest margin (1 million in NBA contract is not a huge hit for a team) given his current play and per game stats. It is estimated in this model to be worth approximately 20 million.
+
+## 3.3 Model 3:
+In this model let us consider trusted and aggressive properties of players. Pascal is playing above league average minutes and is turning the ball over more than the league average in the 2016-2017 season. For the sake of this project let us consider that this is trusted and aggressive play:
+```{r}
+#considers points per game in function
+salary_prediction_model3 <- function(m, trusted, agressiveness){
+  pre_new <- predict(m, data.frame(trusted = trusted, agressiveness = agressiveness))
+  msg <- paste("Trusted:", trusted, "Agressive:", agressiveness, " ==> Expected Salary: $", format(round(pre_new), big.mark = ","), sep = "")
+  print(msg)
+}
+model3<-lm(formula = salary_1718 ~ trusted * agressiveness, data=stats1617_salary1718)
+predict3<-salary_prediction_model3(model3, "Yes", "Yes")
+```
+Reasonably so, having just two true or false parameters limits how much we are able to predict the salary of a player. Pascal's salary is way off what is expected by just looking at two yes or no questions. It is estimated here to be approximately 12.5 million dollars.
+
+# SECTION 4: Conclusion
+
+From this experiement we looked at different regression models and how they can predict a player salary. It can be seen that predicting salary off of two yes or no questions (i.e. are they above league average in turnovers/minutes) is not a good way of predicting. That said, simply looking at PPG misses on a lot of valuable information as well. 
+
+I believe the best metric for predicting salary is one not explored in this project. That is, offensive and defensive metrics should be considered as well as age. Also, another factor should be how they contribute to the culture and winning ways of a team. Not to mention, this talk complicates a lot more if we try analyzing their play in the playoffs. 
+
+This is such an exciting topic to look at, and given more time I would love to explore some of the above. Thank you for reading this and lets go Raptors! :)
+
+# SECTION 5: References
+
+This project is credited to the project made on kaggle by Koki Ando at: https://www.kaggle.com/koki25ando/nba-salary-prediction-using-multiple-regression/report and the data science team at HarvardX for teaching the regression material.
+
+# SECTION 6: Appendix
+
+This interactive plot would not export to .pdf and thus the code is here if you would like to see salary vs. points per game with the teams as the color differentiator:
+
+Using Koki's code on Kaggle as reference, let us look at an interactive plot. We will look at salary against points per game:
+```{r}
+# #name the team column Team
+# names(stats1617_salary1718)[5] <- "Team"
+# #plot salary vs ppg with team as different groups
+# plot_ly(data = stats1617_salary1718, x = ~salary_1718, y = ~PPG, color = ~Team,
+#         hoverinfo = "text",
+#         text = ~paste("Player: ", Player,
+#                       "<br>Salary: ", format(salary_1718, big.mark = ","),"$",
+#                       "<br>PPG: ", round(PPG, digits = 3),
+#                       "<br>Team: ", Team)) %>% 
+#   layout(
+#     title = "Salary vs Point Per Game",
+#     xaxis = list(title = "Salary (USD)"),
+#     yaxis = list(title = "Point per Game (PPG)")
+#   )
+```
